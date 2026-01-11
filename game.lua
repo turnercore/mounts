@@ -13,28 +13,47 @@ function _init()
     {x=0, y=120, w=128}
   }
 
-  player = make_rider(24, 80, 9)
-  enemy = make_rider(96, 72, 8)
+  player = make_rider(24, 80, 9, "joust_bird")
+  enemy = make_rider(96, 72, 8, "joust_bird")
   player.score = 0
   enemy.score = 0
+
+  state = {
+    explosions = {},
+    screen_flashes = {},
+    paused = false,
+    pause_t = 0,
+    ss_t = 0,
+    ss_mag = 0
+  }
 end
 
-function make_rider(x, y, c)
-  return {
+function make_rider(x, y, c, mount_name)
+  local r = {
     x=x, y=y, vx=0, vy=0,
     w=8, h=8, col=c,
     facing=1,
     on_ground=false,
     dead=false, respawn=0,
     flap_cd=0,
-    flap_anim=0
+    flap_anim=0,
+    mount=mounts[mount_name],
+    flap_impulse=flap_impulse,
+    max_vx=max_vx
   }
+  apply_mount_hitbox(r)
+  return r
 end
 
 function _update60()
-  update_player(player)
-  update_enemy(enemy, player)
-  resolve_collision(player, enemy)
+  update_pause()
+  update_juice()
+  update_ss()
+  if not state.paused then
+    update_player(player)
+    update_enemy(enemy, player)
+    resolve_collision(player, enemy)
+  end
 end
 
 function update_player(p)
@@ -43,22 +62,26 @@ function update_player(p)
     return
   end
 
-  if btn(0) then p.facing = -1 end
-  if btn(1) then p.facing = 1 end
-
-  if not p.on_ground then
-    if btn(0) then p.vx = max(p.vx-0.1, -max_vx) end
-    if btn(1) then p.vx = min(p.vx+0.1, max_vx) end
+  local dx = 0
+  if btn(0) then
+    p.facing = -1
+    dx = -1
+  end
+  if btn(1) then
+    p.facing = 1
+    dx = 1
   end
 
-  if btnp(5) and p.flap_cd <= 0 then
-    p.vy = flap_impulse
-    p.flap_cd = 6
-    p.flap_anim = 6
+  mount_call(p, "move", dx, 0)
+
+  if btnp(5) then
+    mount_call(p, "flap")
+  end
+  if btnp(4) then
+    mount_call(p, "alt")
   end
 
-  p.flap_cd = max(0, p.flap_cd-1)
-  p.flap_anim = max(0, p.flap_anim-1)
+  mount_call(p, "tick")
   step_physics(p)
 end
 
@@ -74,31 +97,17 @@ function update_enemy(e, target)
     e.facing = 1
   end
 
-  if not e.on_ground then
-    if e.facing < 0 then
-      e.vx = max(e.vx-0.08, -max_vx)
-    else
-      e.vx = min(e.vx+0.08, max_vx)
-    end
-  end
-
-  if e.flap_cd > 0 then
-    e.flap_cd -= 1
-  end
+  mount_call(e, "move", e.facing, 0)
 
   if e.flap_cd <= 0 then
     if target.y < e.y-6 or (rnd() < 0.02 and not e.on_ground) then
-      e.vy = flap_impulse
-      e.flap_cd = 12
-      e.flap_anim = 6
+      mount_call(e, "flap")
     elseif e.on_ground and rnd() < 0.2 then
-      e.vy = flap_impulse
-      e.flap_cd = 12
-      e.flap_anim = 6
+      mount_call(e, "flap")
     end
   end
 
-  e.flap_anim = max(0, e.flap_anim-1)
+  mount_call(e, "tick")
   step_physics(e)
 end
 
@@ -138,10 +147,10 @@ end
 function resolve_collision(a, b)
   if a.dead or b.dead then return end
 
-  if abs(a.x - b.x) < 6 and abs(a.y - b.y) < 6 then
-    if a.y < b.y - 2 then
+  if a.x + a.w > b.x and a.x < b.x + b.w and a.y + a.h > b.y and a.y < b.y + b.h then
+    if a.y + a.h*0.5 < b.y + b.h*0.5 - 2 then
       kill_rider(b, a)
-    elseif b.y < a.y - 2 then
+    elseif b.y + b.h*0.5 < a.y + a.h*0.5 - 2 then
       kill_rider(a, b)
     else
       a.vx *= -1
@@ -157,7 +166,12 @@ function kill_rider(victim, winner)
   victim.respawn = 90
   victim.vx = 0
   victim.vy = 0
+  mount_call(victim, "ondeath")
   winner.score += 1
+  add_explosion(victim.x + victim.w/2, victim.y + victim.h/2, 2, 4, 8)
+  add_screen_flash(4, 7)
+  ss(8, 2)
+  hitstop(6)
 end
 
 function tick_respawn(r)
@@ -168,14 +182,18 @@ function tick_respawn(r)
     r.y = 24
     r.vx = 0
     r.vy = 0
+    r.flap_cd = 0
+    r.flap_anim = 0
   end
 end
 
 function _draw()
   cls(1)
+  apply_ss()
   draw_platforms()
-  draw_rider(player)
-  draw_rider(enemy)
+  draw_actor(player)
+  draw_actor(enemy)
+  draw_juice()
   draw_ui()
 end
 
@@ -185,18 +203,50 @@ function draw_platforms()
   end
 end
 
-function draw_rider(r)
-  if r.dead then return end
-  rectfill(r.x, r.y, r.x + r.w - 1, r.y + r.h - 1, r.col)
-  rectfill(r.x+2, r.y-2, r.x+r.w-3, r.y, 7)
-
-  local wing_y = r.y + 3
-  if r.flap_anim > 0 then
-    local wing = sin(t() * 4) * 3
-    wing_y = r.y + 3 + wing
+function draw_actor(r)
+  local m = r.mount
+  if m and m.draw then
+    m.draw(r)
   end
-  line(r.x-2, r.y+3, r.x+1, wing_y, 7)
-  line(r.x+r.w+1, r.y+3, r.x+r.w-2, wing_y, 7)
+end
+
+function update_pause()
+  if not state.paused then return end
+  state.pause_t = max(0, state.pause_t-1)
+  if state.pause_t <= 0 then
+    state.paused = false
+  end
+end
+
+function update_juice()
+  tick_juice_list(state.explosions)
+  tick_juice_list(state.screen_flashes)
+end
+
+function tick_juice_list(list)
+  for i = #list, 1, -1 do
+    local e = list[i]
+    if e.dec then e.t -= 1 end
+    if e.t <= 0 then
+      deli(list, i)
+    end
+  end
+end
+
+function draw_juice()
+  for e in all(state.explosions) do
+    if e.draw then e:draw() end
+  end
+  for f in all(state.screen_flashes) do
+    if f.draw then f:draw() end
+  end
+end
+
+function mount_call(r, fn, ...)
+  local m = r.mount
+  if m and m[fn] then
+    return m[fn](r, ...)
+  end
 end
 
 function draw_ui()
