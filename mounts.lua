@@ -78,8 +78,13 @@ mounts = {
       if self.dead then return end
       rectfill(self.x, self.y + 2, self.x + self.w - 1, self.y + self.h - 1, self.col)
       rectfill(self.x + 1, self.y, self.x + self.w - 2, self.y + 2, 5)
-      local cannon_x = self.facing < 0 and (self.x - 3) or (self.x + self.w + 2)
-      line(self.x + self.w / 2, self.y + 2, cannon_x, self.y + 2, 7)
+      local base_x = self.x + self.w / 2
+      local base_y = self.y + 2
+      local ang = (self.aim_ang or 90) / 360
+      local len = 6
+      local dx = cos(ang) * len
+      local dy = sin(ang) * len
+      line(base_x, base_y, base_x + dx, base_y + dy, 7)
       rectfill(self.x + 1, self.y + self.h - 1, self.x + self.w - 2, self.y + self.h, 0)
     end,
     flap = function(self)
@@ -90,18 +95,27 @@ mounts = {
     end,
     alt = function(self)
       if self.shoot_cd and self.shoot_cd > 0 then return end
-      local dir = self.facing < 0 and -1 or 1
-      add_bullet(self.x + self.w / 2 + dir * 6, self.y + 2, dir * 2.4, self)
+      local base_x = self.x + self.w / 2
+      local base_y = self.y + 2
+      local ang = (self.aim_ang or 90) / 360
+      local dx = cos(ang)
+      local dy = sin(ang)
+      add_bullet(base_x + dx * 6, base_y + dy * 6, dx * 2.4, dy * 2.4, self)
       self.shoot_cd = 12
     end,
     move = function(self, dx, dy)
-      if self.on_ground then return end
       local mv = (self.max_vx or max_vx) * 0.9
-      if dx < 0 then self.vx = max(self.vx - 0.08, -mv) end
-      if dx > 0 then self.vx = min(self.vx + 0.08, mv) end
+      local accel = self.on_ground and 0.12 or 0.08
+      if dx < 0 then self.vx = max(self.vx - accel, -mv) end
+      if dx > 0 then self.vx = min(self.vx + accel, mv) end
     end,
     tick = function(self)
       self.flap_cd = max(0, self.flap_cd - 1)
+      if self.aim_up then
+        self.aim_ang = min((self.aim_ang or 90) + 2, 135)
+      elseif self.aim_down then
+        self.aim_ang = max((self.aim_ang or 90) - 2, 45)
+      end
       if self.shoot_cd then
         self.shoot_cd = max(0, self.shoot_cd - 1)
       end
@@ -154,13 +168,20 @@ mounts = {
       if self.dead then return end
       rectfill(self.x, self.y + 1, self.x + self.w - 1, self.y + self.h - 1, self.col)
       rectfill(self.x + 2, self.y - 2, self.x + self.w - 3, self.y, 7)
+      local base_x = self.x + self.w / 2
+      local base_y = self.y + 2
+      local ang = (self.aim_ang or (self.facing < 0 and 180 or 0)) / 360
+      line(base_x, base_y, base_x + cos(ang) * 4, base_y - sin(ang) * 4, 7)
       if self.thrust_t and self.thrust_t > 0 then
         line(self.x + self.w / 2, self.y + self.h, self.x + self.w / 2, self.y + self.h + 2, 8)
       end
     end,
     flap = function(self)
       if self.flap_cd > 0 then return end
-      self.vy = (self.flap_impulse or flap_impulse) * 0.7
+      local ang = (self.aim_ang or (self.facing < 0 and 180 or 0)) / 360
+      local thrust = 2.2
+      self.vx += cos(ang) * thrust
+      self.vy += -sin(ang) * thrust
       self.flap_cd = 3
       self.thrust_t = 3
     end,
@@ -179,6 +200,13 @@ mounts = {
     tick = function(self)
       self.flap_cd = max(0, (self.flap_cd or 0) - 1)
       self.thrust_t = max(0, (self.thrust_t or 0) - 1)
+      if not self.on_ground then
+        if self.aim_up then
+          self.aim_ang = (self.aim_ang or (self.facing < 0 and 180 or 0)) + 3
+        elseif self.aim_down then
+          self.aim_ang = (self.aim_ang or (self.facing < 0 and 180 or 0)) - 3
+        end
+      end
       if self.dash_cd then
         self.dash_cd = max(0, self.dash_cd - 1)
       end
