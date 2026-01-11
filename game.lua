@@ -7,20 +7,21 @@ function _init()
   max_vy = 3
 
   platforms = {
-    {x=12, y=96, w=40},
-    {x=76, y=84, w=40},
-    {x=36, y=64, w=56},
-    {x=0, y=120, w=128}
+    { x = 12, y = 96, w = 40 },
+    { x = 76, y = 84, w = 40 },
+    { x = 36, y = 64, w = 56 },
+    { x = 0, y = 120, w = 128 }
   }
 
-  player = make_rider(24, 80, 9, "joust_bird")
-  enemy = make_rider(96, 72, 8, "joust_bird")
+  player = make_rider(24, 80, 9)
+  enemy = make_rider(96, 72, 8)
   player.score = 0
   enemy.score = 0
 
   state = {
     explosions = {},
     screen_flashes = {},
+    projectiles = {},
     paused = false,
     pause_t = 0,
     ss_t = 0,
@@ -30,19 +31,30 @@ end
 
 function make_rider(x, y, c, mount_name)
   local r = {
-    x=x, y=y, vx=0, vy=0,
-    w=8, h=8, col=c,
-    facing=1,
-    on_ground=false,
-    dead=false, respawn=0,
-    flap_cd=0,
-    flap_anim=0,
-    mount=mounts[mount_name],
-    flap_impulse=flap_impulse,
-    max_vx=max_vx
+    x = x, y = y, vx = 0, vy = 0,
+    w = 8, h = 8, col = c,
+    facing = 1,
+    on_ground = false,
+    dead = false, respawn = 0,
+    flap_cd = 0,
+    flap_anim = 0,
+    shoot_cd = 0,
+    mount = nil,
+    flap_impulse = flap_impulse,
+    max_vx = max_vx
   }
-  apply_mount_hitbox(r)
+  set_mount(r, mount_name or random_mount_name())
   return r
+end
+
+function random_mount_name()
+  local names = { "joust_bird", "joust_bat", "joust_tank", "joust_ball", "joust_jet", "joust_glider" }
+  return names[flr(rnd(#names)) + 1]
+end
+
+function set_mount(r, mount_name)
+  r.mount = mounts[mount_name]
+  apply_mount_hitbox(r)
 end
 
 function _update60()
@@ -53,6 +65,7 @@ function _update60()
     update_player(player)
     update_enemy(enemy, player)
     resolve_collision(player, enemy)
+    update_projectiles()
   end
 end
 
@@ -100,7 +113,7 @@ function update_enemy(e, target)
   mount_call(e, "move", e.facing, 0)
 
   if e.flap_cd <= 0 then
-    if target.y < e.y-6 or (rnd() < 0.02 and not e.on_ground) then
+    if target.y < e.y - 6 or (rnd() < 0.02 and not e.on_ground) then
       mount_call(e, "flap")
     elseif e.on_ground and rnd() < 0.2 then
       mount_call(e, "flap")
@@ -113,7 +126,6 @@ end
 
 function step_physics(r)
   r.vy = min(r.vy + gravity, max_vy)
-  local old_x = r.x
   local old_y = r.y
   r.x += r.vx
   r.y += r.vy
@@ -124,8 +136,8 @@ function step_physics(r)
 
   for p in all(platforms) do
     local hit_x = (r.x + r.w > p.x and r.x < p.x + p.w)
-      or (r.x + r.w + 128 > p.x and r.x + 128 < p.x + p.w)
-      or (r.x + r.w - 128 > p.x and r.x - 128 < p.x + p.w)
+        or (r.x + r.w + 128 > p.x and r.x + 128 < p.x + p.w)
+        or (r.x + r.w - 128 > p.x and r.x - 128 < p.x + p.w)
     if r.vy >= 0 and hit_x then
       local prev_feet = old_y + r.h
       local feet = r.y + r.h
@@ -147,10 +159,10 @@ end
 function resolve_collision(a, b)
   if a.dead or b.dead then return end
 
-  if a.x + a.w > b.x and a.x < b.x + b.w and a.y + a.h > b.y and a.y < b.y + b.h then
-    if a.y + a.h*0.5 < b.y + b.h*0.5 - 2 then
+  if aabb(a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h) then
+    if a.y + a.h * 0.5 < b.y + b.h * 0.5 - 2 then
       kill_rider(b, a)
-    elseif b.y + b.h*0.5 < a.y + a.h*0.5 - 2 then
+    elseif b.y + b.h * 0.5 < a.y + a.h * 0.5 - 2 then
       kill_rider(a, b)
     else
       a.vx *= -1
@@ -168,7 +180,7 @@ function kill_rider(victim, winner)
   victim.vy = 0
   mount_call(victim, "ondeath")
   winner.score += 1
-  add_explosion(victim.x + victim.w/2, victim.y + victim.h/2, 2, 4, 8)
+  add_explosion(victim.x + victim.w / 2, victim.y + victim.h / 2, 2, 4, 8)
   add_screen_flash(4, 7)
   ss(8, 2)
   hitstop(6)
@@ -184,6 +196,8 @@ function tick_respawn(r)
     r.vy = 0
     r.flap_cd = 0
     r.flap_anim = 0
+    r.shoot_cd = 0
+    set_mount(r, random_mount_name())
   end
 end
 
@@ -191,6 +205,7 @@ function _draw()
   cls(1)
   apply_ss()
   draw_platforms()
+  draw_projectiles()
   draw_actor(player)
   draw_actor(enemy)
   draw_juice()
@@ -212,7 +227,7 @@ end
 
 function update_pause()
   if not state.paused then return end
-  state.pause_t = max(0, state.pause_t-1)
+  state.pause_t = max(0, state.pause_t - 1)
   if state.pause_t <= 0 then
     state.paused = false
   end
@@ -242,6 +257,34 @@ function draw_juice()
   end
 end
 
+function add_bullet(x, y, vx, owner)
+  local b = { x = x, y = y, vx = vx, w = 2, h = 2, owner = owner }
+  add(state.projectiles, b)
+  return b
+end
+
+function update_projectiles()
+  for i = #state.projectiles, 1, -1 do
+    local b = state.projectiles[i]
+    b.x += b.vx
+    if is_offscreen_xy(b.x, b.y, b.w, b.h, 2) then
+      deli(state.projectiles, i)
+    else
+      local target = b.owner == player and enemy or player
+      if not target.dead and aabb(b.x, b.y, b.w, b.h, target.x, target.y, target.w, target.h) then
+        kill_rider(target, b.owner)
+        deli(state.projectiles, i)
+      end
+    end
+  end
+end
+
+function draw_projectiles()
+  for b in all(state.projectiles) do
+    rectfill(b.x, b.y, b.x + b.w - 1, b.y + b.h - 1, 10)
+  end
+end
+
 function mount_call(r, fn, ...)
   local m = r.mount
   if m and m[fn] then
@@ -250,7 +293,7 @@ function mount_call(r, fn, ...)
 end
 
 function draw_ui()
-  print("p1 "..player.score, 4, 4, 7)
-  print("cpu "..enemy.score, 84, 4, 7)
+  print("p1 " .. player.score, 4, 4, 7)
+  print("cpu " .. enemy.score, 84, 4, 7)
   print("x flap", 4, 120, 6)
 end
